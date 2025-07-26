@@ -197,7 +197,8 @@ export type MessageMetadata<StateType extends Record<string, unknown>> = {
   branchOptions: string[] | undefined;
 };
 
-function getBranchSequence<StateType extends Record<string, unknown>>(
+// Exported for internal testing and potential external diagnostics.
+export function getBranchSequence<StateType extends Record<string, unknown>>(
   history: ThreadState<StateType>[]
 ) {
   const childrenMap: Record<string, ThreadState<StateType>[]> = {};
@@ -220,6 +221,28 @@ function getBranchSequence<StateType extends Record<string, unknown>>(
     childrenMap[checkpointId] ??= [];
     childrenMap[checkpointId].push(state);
   });
+
+  // Fallback: if the slice doesn't include a checkpoint whose parent is "$",
+  // treat every checkpoint whose parent isn't in the slice (an "orphan") as a
+  // direct child of "$". This lets limited histories still produce a branch
+  // tree instead of an empty result.
+
+  if (!childrenMap["$"]?.length) {
+    const presentIds = new Set(
+      history
+        .map((s) => s.checkpoint?.checkpoint_id)
+        .filter((id): id is string => id != null)
+    );
+
+    const orphans = history.filter((s) => {
+      const parentId = s.parent_checkpoint?.checkpoint_id;
+      return parentId == null || !presentIds.has(parentId);
+    });
+
+    if (orphans.length > 0) {
+      childrenMap["$"] = orphans;
+    }
+  }
 
   // Second pass - create a tree of sequences
   type Task = { id: string; sequence: Sequence; path: string[] };
@@ -316,10 +339,10 @@ function getBranchView<StateType extends Record<string, unknown>>(
       const index =
         forkId != null
           ? item.items.findIndex((value) => {
-              const firstItem = value.items.at(0);
-              if (!firstItem || firstItem.type !== "node") return false;
-              return firstItem.value.checkpoint?.checkpoint_id === forkId;
-            })
+            const firstItem = value.items.at(0);
+            if (!firstItem || firstItem.type !== "node") return false;
+            return firstItem.value.checkpoint?.checkpoint_id === forkId;
+          })
           : -1;
 
       const nextItems = item.items.at(index)?.items ?? [];
@@ -739,8 +762,8 @@ interface SubmitOptions<
   feedbackKeys?: string[];
   streamMode?: Array<StreamMode>;
   optimisticValues?:
-    | Partial<StateType>
-    | ((prev: StateType) => Partial<StateType>);
+  | Partial<StateType>
+  | ((prev: StateType) => Partial<StateType>);
   /**
    * Whether or not to stream the nodes of any subgraphs called
    * by the assistant.
